@@ -1,0 +1,484 @@
+#!/usr/bin/env node
+/**
+ * check-xdex-lp-burn.js
+ * ===========================================
+ * XDEX LP Burn Checker with BurnChecked Detection
+ * ===========================================
+ *
+ * Checks if LP tokens for a given token have been burned,
+ * including detection of BurnChecked transactions where
+ * tokens are permanently destroyed (supply reduced).
+ *
+ * Usage:
+ *   node check-xdex-lp-burn.js <TOKEN_MINT_ADDRESS>
+ *
+ * Requirements:
+ *   npm install @solana/web3.js@1
+ */
+
+const { Connection, PublicKey } = require("@solana/web3.js");
+const https = require("https");
+
+const DEFAULT_RPC = process.env.X1_RPC_URL || "https://rpc.mainnet.x1.xyz";
+const XDEX_API = "https://api.xdex.xyz/api";
+
+const BURN_ADDRESSES = [
+  "1nc1nerator11111111111111111111111111111111",
+  "11111111111111111111111111111111",
+  "1111111111111111111111111111111111111111111",
+];
+
+function shortAddr(addr, len = 6) {
+  if (!addr) return "N/A";
+  return addr.length > len * 2 ? `${addr.slice(0, len)}...${addr.slice(-len)}` : addr;
+}
+
+function formatNumber(n) {
+  if (typeof n === "string") n = parseFloat(n);
+  if (isNaN(n)) return "N/A";
+  if (n >= 1e12) return (n / 1e12).toFixed(2) + "T";
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
+  return n.toFixed(2);
+}
+
+async function fetchJSON(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = "";
+      res.on("data", chunk => data += chunk);
+      res.on("end", () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          reject(new Error("Invalid JSON response"));
+        }
+      });
+    }).on("error", reject);
+  });
+}
+
+async function checkTokenAuthorities(connection, mintPubkey) {
+  const result = {
+    mintAuthority: null,
+    mintAuthorityRevoked: false,
+    freezeAuthority: null,
+    freezeAuthorityRevoked: false,
+    supply: 0,
+    decimals: 0,
+  };
+
+  try {
+    const accountInfo = await connection.getAccountInfo(mintPubkey);
+    if (!accountInfo) return result;
+
+    const data = accountInfo.data;
+    if (data.length >= 82) {
+      const mintAuthOption = data.readUInt32LE(0);
+      if (mintAuthOption === 1) {
+        result.mintAuthority = new PublicKey(data.slice(4, 36)).toBase58();
+      } else {
+        result.mintAuthorityRevoked = true;
+      }
+
+      const supplyLow = BigInt(data.readUInt32LE(36));
+      const supplyHigh = BigInt(data.readUInt32LE(40));
+      result.supply = Number((supplyHigh << BigInt(32)) | supplyLow);
+      result.decimals = data.readUInt8(44);
+
+      const freezeAuthOption = data.readUInt32LE(46);
+      if (freezeAuthOption === 1) {
+        result.freezeAuthority = new PublicKey(data.slice(50, 82)).toBase58();
+      } else {
+        result.freezeAuthorityRevoked = true;
+      }
+    }
+  } catch (err) {
+    console.error(`Error reading mint: ${err.message}`);
+  }
+
+  return result;
+}
+
+async function checkLPBurnStatus(connection, lpMintAddress) {
+  const result = {
+    totalSupply: 0,
+    burnedAmount: 0,
+    burnPercentage: 0,
+    mintAuthorityRevoked: false,
+    topHolders: [],
+  };
+
+  if (!lpMintAddress) return result;
+
+  try {
+    const lpMintPubkey = new PublicKey(lpMintAddress);
+
+    const mintInfo = await connection.getAccountInfo(lpMintPubkey);
+    if (!mintInfo) return result;
+
+    const data = mintInfo.data;
+    if (data.length >= 82) {
+      const supplyLow = BigInt(data.readUInt32LE(36));
+      const supplyHigh = BigInt(data.readUInt32LE(40));
+      result.totalSupply = Number((supplyHigh << BigInt(32)) | supplyLow);
+
+      const mintAuthOption = data.readUInt32LE(0);
+      result.mintAuthorityRevoked = mintAuthOption !== 1;
+    }
+
+    const largestAccounts = await connection.getTokenLargestAccounts(lpMintPubkey);
+
+    for (const account of largestAccounts.value || []) {
+      try {
+        const accountInfo = await connection.getParsedAccountInfo(account.address);
+        if (!accountInfo.value) continue;
+
+        const info = accountInfo.value.data.parsed?.info;
+        if (!info) continue;
+
+        const amount = parseFloat(info.tokenAmount?.uiAmountString || "0");
+        const isBurn = BURN_ADDRESSES.includes(info.owner);
+
+        result.topHolders.push({
+          address: info.owner,
+          amount: amount,
+          isBurnAddress: isBurn,
+        });
+
+        if (isBurn) {
+          result.burnedAmount += amount;
+        }
+      } catch {
+        // Skip
+      }
+    }
+
+    if (result.totalSupply > 0) {
+      result.burnPercentage = (result.burnedAmount / (result.totalSupply / Math.pow(10, 0))) * 100;
+    }
+
+    result.topHolders.sort((a, b) => b.amount - a.amount);
+  } catch (err) {
+    console.error(`Error checking LP burn: ${err.message}`);
+  }
+
+  return result;
+}
+
+/**
+ * Check for BurnChecked / Burn transactions on an LP mint.
+ * These are on-chain burns where tokens are permanently destroyed
+ * (total supply decreases). This is the strongest form of LP lock.
+ */
+async function checkBurnCheckedTxs(connection, lpMintAddress, limit = 100) {
+  const burns = [];
+  if (!lpMintAddress) return burns;
+
+  try {
+    const lpMintPubkey = new PublicKey(lpMintAddress);
+    const signatures = await connection.getSignaturesForAddress(lpMintPubkey, { limit });
+
+    for (const sigInfo of signatures) {
+      try {
+        const tx = await connection.getParsedTransaction(sigInfo.signature, {
+          commitment: "confirmed",
+          maxSupportedTransactionVersion: 0,
+        });
+        if (!tx || !tx.transaction?.message?.instructions) continue;
+
+        for (const ix of tx.transaction.message.instructions) {
+          if (!ix.parsed) continue;
+
+          // Detect both burnChecked and burn instruction types
+          if (ix.parsed.type === "burnChecked" || ix.parsed.type === "burn") {
+            const info = ix.parsed.info;
+            const decimals = info.tokenAmount?.decimals || 9;
+            const amount =
+              info.tokenAmount?.uiAmount ||
+              parseFloat(info.amount || 0) / Math.pow(10, decimals);
+
+            burns.push({
+              signature: sigInfo.signature,
+              date: sigInfo.blockTime
+                ? new Date(sigInfo.blockTime * 1000).toISOString()
+                : "Unknown",
+              type: ix.parsed.type,
+              amount: amount,
+              authority: info.authority || "Unknown",
+              mint: info.mint || lpMintAddress,
+            });
+          }
+        }
+      } catch {
+        // Skip failed transaction lookups
+      }
+    }
+  } catch (err) {
+    console.error(`Error checking burn txs: ${err.message}`);
+  }
+
+  return burns;
+}
+
+async function main() {
+  const tokenAddress = process.argv[2];
+
+  if (!tokenAddress) {
+    console.error("Usage: node check-xdex-lp-burn.js <TOKEN_MINT_ADDRESS>");
+    process.exit(1);
+  }
+
+  console.log("╔══════════════════════════════════════════════════════════╗");
+  console.log("║          XDEX LP Burn Checker v2.0                      ║");
+  console.log("║          Now with BurnChecked Detection 🔥               ║");
+  console.log("╚══════════════════════════════════════════════════════════╝\n");
+
+  console.log(`Token: ${tokenAddress}\n`);
+
+  const connection = new Connection(DEFAULT_RPC, "confirmed");
+  const mintPubkey = new PublicKey(tokenAddress);
+
+  // Check token authorities
+  console.log("📋 Token Authority Check");
+  console.log("─".repeat(50));
+  const tokenInfo = await checkTokenAuthorities(connection, mintPubkey);
+
+  console.log(`Mint Authority: ${tokenInfo.mintAuthorityRevoked ? "✅ Revoked" : "⚠️ Active"}`);
+  if (!tokenInfo.mintAuthorityRevoked && tokenInfo.mintAuthority) {
+    console.log(`  Authority:    ${shortAddr(tokenInfo.mintAuthority)}`);
+  }
+  console.log(`Freeze Auth:    ${tokenInfo.freezeAuthorityRevoked ? "✅ Revoked" : "⚠️ Active"}`);
+  if (!tokenInfo.freezeAuthorityRevoked && tokenInfo.freezeAuthority) {
+    console.log(`  Authority:    ${shortAddr(tokenInfo.freezeAuthority)}`);
+  }
+  console.log(`Supply:         ${formatNumber(tokenInfo.supply / Math.pow(10, tokenInfo.decimals))}`);
+  console.log(`Decimals:       ${tokenInfo.decimals}\n`);
+
+  // Fetch XDEX pools
+  console.log("🔍 Fetching XDEX pools...");
+  let pools = [];
+  try {
+    const response = await fetchJSON(`${XDEX_API}/xendex/pool/list`);
+    const allPools = response.data || [];
+    pools = allPools.filter(p =>
+      p.token1_address === tokenAddress || p.token2_address === tokenAddress
+    );
+  } catch (err) {
+    console.error(`Error fetching pools: ${err.message}`);
+    process.exit(1);
+  }
+
+  if (pools.length === 0) {
+    console.log("❌ No pools found on XDEX\n");
+    process.exit(0);
+  }
+
+  console.log(`✅ Found ${pools.length} pool(s)\n`);
+
+  // Analyze each pool
+  let totalBurnedLP = 0;
+  let totalBurnCheckedLP = 0;
+  let totalLPSupply = 0;
+  let allBurnTxs = [];
+
+  for (let i = 0; i < pools.length; i++) {
+    const pool = pools[i];
+    console.log(`─`.repeat(70));
+    console.log(`Pool ${i + 1}/${pools.length}: ${pool.token1_symbol} / ${pool.token2_symbol}`);
+    console.log(`DEX:          ${pool.dex_name || "XDEX"}`);
+    console.log(`Pool Address: ${pool.pool_address}`);
+    console.log(`TVL (USD):    ${pool.tvl ? "$" + formatNumber(pool.tvl) : "N/A"}`);
+    console.log(`Volume 24h:   ${pool.token1_volume_usd_24h ? "$" + formatNumber(pool.token1_volume_usd_24h) : "N/A"}`);
+    console.log(`TXNs 24h:     ${pool.txns_24h || 0}`);
+    console.log(`APR 24h:      ${pool.apr_24h ? pool.apr_24h.toFixed(2) + "%" : "N/A"}`);
+
+    try {
+      const details = await fetchJSON(`${XDEX_API}/xendex/pool/${pool.pool_address}`);
+      const poolData = details.data || {};
+      const lpMint = poolData.pool_info?.lpMint;
+
+      if (!lpMint) {
+        console.log("  ❌ No LP mint found\n");
+        continue;
+      }
+
+      console.log(`LP Mint:      ${lpMint}`);
+
+      const lpStatus = await checkLPBurnStatus(connection, lpMint);
+
+      // Get LP supply from pool info (hex)
+      let lpSupplyFromPool = 0;
+      if (poolData.pool_info?.lpSupply) {
+        try {
+          const hexSupply = poolData.pool_info.lpSupply.replace(/"/g, "");
+          lpSupplyFromPool = parseInt(hexSupply, 16) / Math.pow(10, poolData.pool_info.lpMintDecimals || 9);
+        } catch {}
+      }
+
+      const effectiveSupply = lpSupplyFromPool > 0 ? lpSupplyFromPool : lpStatus.totalSupply;
+      totalLPSupply += effectiveSupply;
+      totalBurnedLP += lpStatus.burnedAmount;
+
+      console.log(`LP Supply:    ${formatNumber(effectiveSupply)}`);
+      console.log(`LP Burned:    ${lpStatus.burnedAmount > 0 ? "🔥 Yes (sent to burn address)" : "❌ No (not in burn addresses)"}`);
+
+      if (lpStatus.burnedAmount > 0) {
+        const burnPct = (lpStatus.burnedAmount / (effectiveSupply + lpStatus.burnedAmount)) * 100;
+        console.log(`LP Burn %:    ${burnPct.toFixed(2)}% (in burn addresses)`);
+      }
+
+      console.log(`LP Mint Auth: ${lpStatus.mintAuthorityRevoked ? "✅ Revoked" : "⚠️ Active (normal for AMM pools)"}`);
+
+      // Show burn address holdings
+      if (lpStatus.topHolders.length > 0) {
+        const burnHolders = lpStatus.topHolders.filter(h => h.isBurnAddress);
+        if (burnHolders.length > 0) {
+          console.log(`\n  📍 Burn Address Holdings:`);
+          burnHolders.forEach(h => {
+            console.log(`    • ${shortAddr(h.address)}: ${formatNumber(h.amount)}`);
+          });
+        }
+      }
+
+      // Check BurnChecked transactions (tokens permanently destroyed)
+      console.log(`\n  🔥 Checking BurnChecked Transactions...`);
+      const burnTxs = await checkBurnCheckedTxs(connection, lpMint);
+
+      if (burnTxs.length > 0) {
+        let poolBurnChecked = 0;
+        console.log(`  ✅ Found ${burnTxs.length} BurnChecked transaction(s):\n`);
+
+        burnTxs.forEach((b, idx) => {
+          poolBurnChecked += b.amount;
+          console.log(`    🔥 Burn #${idx + 1}`);
+          console.log(`       Amount:    ${formatNumber(b.amount)} LP tokens`);
+          console.log(`       Type:      ${b.type === "burnChecked" ? "BurnChecked ✅" : "Burn"}`);
+          console.log(`       Date:      ${b.date.split("T")[0]}`);
+          console.log(`       Authority: ${shortAddr(b.authority)}`);
+          console.log(`       TX:        ${shortAddr(b.signature, 10)}`);
+          console.log(`       Explorer:  https://explorer.mainnet.x1.xyz/tx/${b.signature}`);
+          console.log();
+        });
+
+        console.log(`    📊 Total Destroyed via BurnChecked: ${formatNumber(poolBurnChecked)} LP tokens`);
+
+        // Calculate percentage including destroyed tokens
+        const originalSupply = effectiveSupply + poolBurnChecked;
+        const destroyedPct = (poolBurnChecked / originalSupply) * 100;
+        console.log(`    📊 Destroyed %: ${destroyedPct.toFixed(2)}% of original supply permanently gone`);
+
+        totalBurnCheckedLP += poolBurnChecked;
+        allBurnTxs = allBurnTxs.concat(burnTxs);
+      } else {
+        console.log(`  ❌ No BurnChecked transactions found for this LP mint`);
+      }
+
+      console.log();
+    } catch (err) {
+      console.error(`  Error analyzing pool: ${err.message}\n`);
+    }
+  }
+
+  // Summary
+  console.log("\n" + "═".repeat(70));
+  console.log("                    RISK SUMMARY");
+  console.log("═".repeat(70));
+
+  let riskScore = 0;
+  const riskFactors = [];
+  const safeFactors = [];
+
+  // Mint authority check
+  if (tokenInfo.mintAuthorityRevoked) {
+    safeFactors.push("✅ Mint authority revoked — no new tokens can be created");
+  } else {
+    riskScore += 30;
+    riskFactors.push("🔴 Mint authority active — new tokens can be minted (+30)");
+  }
+
+  // Freeze authority check
+  if (tokenInfo.freezeAuthorityRevoked) {
+    safeFactors.push("✅ Freeze authority revoked — wallets cannot be frozen");
+  } else {
+    riskScore += 20;
+    riskFactors.push("🔴 Freeze authority active — wallets can be frozen (+20)");
+  }
+
+  // LP burn check (sent to burn addresses)
+  if (totalBurnedLP > 0) {
+    const avgBurnPct = totalLPSupply > 0 ? (totalBurnedLP / (totalLPSupply + totalBurnedLP)) * 100 : 0;
+    safeFactors.push(`✅ LP tokens in burn addresses (${avgBurnPct.toFixed(1)}%)`);
+  }
+
+  // BurnChecked check (permanently destroyed)
+  if (totalBurnCheckedLP > 0) {
+    const originalTotal = totalLPSupply + totalBurnCheckedLP;
+    const destroyedPct = (totalBurnCheckedLP / originalTotal) * 100;
+    safeFactors.push(`🔥 LP tokens permanently destroyed via BurnChecked (${destroyedPct.toFixed(1)}%)`);
+    safeFactors.push(`   → ${formatNumber(totalBurnCheckedLP)} LP tokens are gone forever`);
+    safeFactors.push(`   → ${allBurnTxs.length} burn transaction(s) on-chain`);
+  }
+
+  // Combined LP safety check
+  const totalEffectiveBurn = totalBurnedLP + totalBurnCheckedLP;
+  if (totalEffectiveBurn > 0) {
+    const combinedOriginal = totalLPSupply + totalBurnCheckedLP;
+    const combinedPct = combinedOriginal > 0 ? (totalEffectiveBurn / combinedOriginal) * 100 : 0;
+    safeFactors.push(`\n📊 Combined LP Safety: ${combinedPct.toFixed(1)}% of LP secured`);
+    safeFactors.push(`   • In burn addresses: ${formatNumber(totalBurnedLP)}`);
+    safeFactors.push(`   • Permanently destroyed: ${formatNumber(totalBurnCheckedLP)}`);
+    safeFactors.push(`   • Remaining circulating: ${formatNumber(totalLPSupply - totalBurnedLP)}`);
+  } else {
+    riskScore += 25;
+    riskFactors.push("🟡 No LP tokens burned or destroyed (+25)");
+  }
+
+  console.log();
+  safeFactors.forEach(f => console.log(f));
+  if (riskFactors.length > 0) {
+    console.log();
+    riskFactors.forEach(f => console.log(f));
+  }
+
+  console.log("\n" + "─".repeat(70));
+
+  let riskRating = "LOW";
+  let riskEmoji = "🟢";
+
+  if (riskScore >= 50) {
+    riskRating = "HIGH";
+    riskEmoji = "🔴";
+  } else if (riskScore >= 25) {
+    riskRating = "MEDIUM";
+    riskEmoji = "🟡";
+  }
+
+  console.log(`Risk Score: ${riskScore}/100`);
+  console.log(`Risk Level: ${riskEmoji} ${riskRating}`);
+
+  // BurnChecked explanation
+  if (totalBurnCheckedLP > 0) {
+    console.log("\n💡 BurnChecked Explained:");
+    console.log("   BurnChecked permanently destroys tokens — they no longer exist.");
+    console.log("   Unlike sending to a burn address, the total supply is reduced.");
+    console.log("   This is the strongest form of LP security — irreversible.");
+  }
+
+  console.log("\n" + "═".repeat(70));
+  console.log(`\n🔗 Explorer: https://explorer.mainnet.x1.xyz/address/${tokenAddress}`);
+
+  // List burn transactions at the end for reference
+  if (allBurnTxs.length > 0) {
+    console.log(`\n🔥 All BurnChecked Transactions:`);
+    allBurnTxs.forEach((b, idx) => {
+      console.log(`  ${idx + 1}. ${formatNumber(b.amount)} LP | ${b.date.split("T")[0]} | https://explorer.mainnet.x1.xyz/tx/${b.signature}`);
+    });
+  }
+}
+
+main().catch(err => {
+  console.error("Fatal error:", err);
+  process.exit(1);
+});

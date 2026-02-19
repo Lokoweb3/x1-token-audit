@@ -1,0 +1,30 @@
+{
+  "name": "x1-token-audit",
+  "version": "2.2.0",
+  "description": "X1 blockchain token safety analyzer with XDEX API integration and Telegram bot",
+  "main": "check-xdex-lp-burn.js",
+  "scripts": {
+    "audit": "node check-xdex-lp-burn.js",
+    "lp-check": "node check-lp-by-mint.js",
+    "bot": "node telegram-bot.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4"
+  },
+  "keywords": [
+    "x1",
+    "blockchain",
+    "token",
+    "audit",
+    "xdex",
+    "svm",
+    "solana",
+    "telegram"
+  ],
+  "author": "Lokoweb3",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Lokoweb3/x1-token-audit.git"
+  }
+}
