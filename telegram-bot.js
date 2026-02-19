@@ -421,11 +421,13 @@ async function handleUpdate(update) {
     const help = `*X1 Token Audit Bot*
 
 Commands:
-/audit <TOKEN>  - Full token audit with risk score
-/lp <TOKEN>     - Check LP burn status
-/watch <TOKEN>  - Add token to watchlist
-/watch list     - Show watchlist
-/stats          - Show audit statistics
+/audit <TOKEN>   - Full token audit with risk score
+/lp <TOKEN>      - Check LP burn status
+/watch <TOKEN>   - Add token to watchlist
+/watch list      - Show watchlist
+/history <TOKEN> - Show past audits for token
+/trend <TOKEN>   - Show LP changes over time
+/stats           - Show audit statistics
 
 Example:
 /audit 7SXmUpcBGSAwW5LmtzQVF9jHswZ7xzmdKqWa4nDgL3ER
@@ -500,6 +502,20 @@ Total audits: ${totalAudits}
       await sendMessage(chatId, stats);
       break;
 
+    case '/history':
+      await handleHistory(chatId, args[0], messageId);
+      break;
+
+    case '/trend':
+      await handleTrend(chatId, args[0], messageId);
+      break;
+
+    case '/lp':
+      if (args[0] === 'burn' || !args[0]) {
+        await handleLpBurn(chatId, args[0] || args[1], messageId);
+      }
+      break;
+
     default:
       await sendMessage(chatId, 'Unknown command. Use /help for commands.');
   }
@@ -554,6 +570,62 @@ function createWebhookServer() {
   });
 
   return server;
+}
+
+// ──────────────────────────────────────────────────────────────
+// Enhanced Functions
+// ──────────────────────────────────────────────────────────────
+
+// /history command - show audit history for a token
+async function handleHistory(chatId, token, messageId) {
+  if (!token) {
+    await sendMessage(chatId, 'Usage: /history <TOKEN>', messageId);
+    return;
+  }
+
+  const userHistory = auditHistory.filter(a => a.token === token).slice(-5);
+  
+  if (userHistory.length === 0) {
+    await sendMessage(chatId, `No audit history for ${shortAddr(token)}.\nRun /audit ${token} first.`, messageId);
+    return;
+  }
+
+  let message = `📝 *Audit History for ${shortAddr(token)}*\n\n`;
+  userHistory.forEach((audit, i) => {
+    const date = new Date(audit.timestamp).toLocaleString();
+    message += `${i + 1}. ${date} (${audit.riskRating})\n`;
+  });
+
+  await sendMessage(chatId, message, messageId);
+}
+
+// /trend command - show LP changes over time
+async function handleTrend(chatId, token, messageId) {
+  if (!token) {
+    await sendMessage(chatId, 'Usage: /trend <TOKEN>', messageId);
+    return;
+  }
+
+  const userHistory = auditHistory.filter(a => a.token === token);
+  
+  if (userHistory.length < 2) {
+    await sendMessage(chatId, `Need at least 2 audits for ${shortAddr(token)} to show trends.\nRun /audit ${token} multiple times.`, messageId);
+    return;
+  }
+
+  const timestamps = userHistory.map(h => new Date(h.timestamp).getTime());
+  const hoursSinceFirst = (Date.now() - timestamps[0]) / (1000 * 60 * 60);
+  
+  let message = `📊 *Trend Analysis for ${shortAddr(token)}*\n\n`;
+  message += `• Total audits: ${userHistory.length}\n`;
+  message += `• Time span: ${hoursSinceFirst.toFixed(1)} hours\n`;
+  
+  const lastAudit = userHistory[userHistory.length - 1];
+  if (lastAudit.lpBurned) {
+    message += `• Current LP burned: ${lastAudit.lpBurned}\n`;
+  }
+
+  await sendMessage(chatId, message, messageId);
 }
 
 // Main
