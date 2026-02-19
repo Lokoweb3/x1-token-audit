@@ -7,7 +7,8 @@ X1 blockchain token safety analyzer with XDEX API integration.
 - 🔍 **Mint Authority Check** — Can new tokens be minted?
 - ❄️ **Freeze Authority Check** — Can wallets be frozen?
 - 🏊 **XDEX Pool Discovery** — Find all liquidity pools
-- 🔥 **LP Burn Detection** — Check if LP tokens were burned
+- 🔥 **LP Burn Detection** — Check if LP tokens were burned (v2.0+)
+- 🔥 **BurnChecked Detection** — Find permanently destroyed tokens via on-chain burns (v2.1+)
 - ⚖️ **Risk Scoring** — 0-100 scale with clear categories
 
 ## Quick Start
@@ -35,6 +36,37 @@ node check-xdex-lp-burn.js 7SXmUpcBGSAwW5LmtzQVF9jHswZ7xzmdKqWa4nDgL3ER
 | `check-burn-txs.js` | Burn transaction history |
 | `decode-tx.js` | Decode and analyze any transaction |
 | `telegram-bot.js` | Run audio audits from Telegram |
+
+## v2.1 Features - BurnChecked Detection
+
+The v2.1 update adds **BurnChecked transaction detection** - a more secure form of LP burning that permanently removes tokens from supply.
+
+### What is BurnChecked?
+
+BurnChecked transactions use Solana's token burn instruction, which:
+- Permanently destroys tokens (removes from total supply)
+- Is irreversible (unlike sending to burn addresses)
+- Is verified on-chain as a legitimate burn instruction
+
+### Example Output
+
+```
+Pool 1/5: WXNT / AGI
+  🔥 Found 2 BurnChecked transactions!
+    BURN #1:
+      Amount:      200.00K LP tokens
+      Method:      BurnChecked ✅ (permanent destruction)
+      Date:        2026-02-17
+      Authority:   8QXh51...BjggHX
+      
+    BURN #2:
+      Amount:      1.00 LP tokens
+      Method:      BurnChecked ✅ (permanent destruction)
+      Date:        2026-02-17
+      Authority:   8QXh51...BjggHX
+
+  📊 Destroyed: 200.00K LP (48.1%)
+```
 
 ## Environment Variables
 
@@ -110,4 +142,4 @@ https://github.com/Lokoweb3/x1-token-audit
 
 ## Version
 
-1.2.0 (includes Telegram bot)
+2.2.0 (includes v2.1 BurnChecked detection)
