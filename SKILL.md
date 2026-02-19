@@ -22,6 +22,12 @@ New in v1.1.0: Transaction decoder for detailed analysis of any transaction on X
 - **Error diagnosis**: See failed transactions with their errors
 - **Log messages**: Review first 10 log entries for debugging
 
+### Telegram Bot
+
+New in v2.0: Telegram bot for running token audits directly from chat!
+
+**See [README_TG.md](README_TG.md) for complete Telegram bot documentation.**
+
 ### Scripts
 
 | Script | Purpose | Usage |
@@ -31,8 +37,9 @@ New in v1.1.0: Transaction decoder for detailed analysis of any transaction on X
 | `check-lp-by-mint.js` | Check specific LP mint | `node check-lp-by-mint.js <LP_MINT>` |
 | `x1-lp-audit.js` | Find pools for token | `node x1-lp-audit.js <TOKEN_MINT>` |
 | `check-lp-detailed.js` | Detailed LP analysis | `node check-lp-detailed.js <TOKEN_MINT>` |
-| `check-burn-txs.js` | Burn transaction history | `node check-burn-txs.js <TOKEN_MINT>` |
+| `check-burn-txs.js` | Burn transaction history | `node check-burn-txs.js <ADDRESS>` |
 | `decode-tx.js` | Decode and analyze any transaction | `node decode-tx.js <TX_HASH>` |
+| `telegram-bot.js` | Telegram bot for audits | `node telegram-bot.js` |
 
 ## Quick Start
 
@@ -52,6 +59,8 @@ node decode-tx.js 5xGqvK7p...vK7p
 # Run Telegram bot
 export TELEGRAM_BOT_TOKEN=<your-token>
 node telegram-bot.js
+
+# See README_TG.md for complete Telegram bot documentation
 ```
 
 ## Environment Variables
@@ -177,4 +186,4 @@ https://github.com/Lokoweb3/x1-token-audit
 
 ## Version
 
-1.2.0 (includes Telegram bot)
+2.2.0 (includes v2.1 BurnChecked detection + v2.2 enhanced visuals + Telegram bot)

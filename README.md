@@ -17,7 +17,7 @@ X1 blockchain token safety analyzer with XDEX API integration.
 # Install dependencies
 npm install @solana/web3.js
 
-# Run audit
+# Run audit (recommended)
 node check-xdex-lp-burn.js <TOKEN_MINT>
 
 # Example
@@ -35,7 +35,7 @@ node check-xdex-lp-burn.js 7SXmUpcBGSAwW5LmtzQVF9jHswZ7xzmdKqWa4nDgL3ER
 | `check-lp-detailed.js` | Detailed LP analysis |
 | `check-burn-txs.js` | Burn transaction history |
 | `decode-tx.js` | Decode and analyze any transaction |
-| `telegram-bot.js` | Run audio audits from Telegram |
+| `telegram-bot.js` | Telegram bot for audits (see [README_TG.md](README_TG.md)) |
 
 ## v2.1 Features - BurnChecked Detection
 
@@ -136,10 +136,14 @@ Risk Score: 0/100
 Risk Level: 🟢 LOW
 ```
 
+## Telegram Bot Reference
+
+See [README_TG.md](README_TG.md) for complete Telegram bot documentation and command reference.
+
 ## GitHub Repository
 
 https://github.com/Lokoweb3/x1-token-audit
 
 ## Version
 
-2.2.0 (includes v2.1 BurnChecked detection)
+2.2.0 (includes v2.1 BurnChecked detection + v2.2 enhanced visuals)
