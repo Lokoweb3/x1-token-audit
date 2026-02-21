@@ -1,6 +1,6 @@
 {
   "name": "x1-token-audit",
-  "version": "2.2.0",
+  "version": "2.5.3",
   "description": "X1 blockchain token safety analyzer with XDEX API integration and Telegram bot",
   "main": "check-xdex-lp-burn.js",
   "scripts": {

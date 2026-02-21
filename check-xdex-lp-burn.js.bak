@@ -86,46 +86,39 @@ async function fetchJSON(url) {
   });
 }
 
-async function getTokenMetadata(tokenAddress, pools, connection) {
-  let pricePerToken = 0;
-  let liquidity = 0;
-  let volume24h = 0;
-  let tokenDecimals = 9;
-  
+async function getTokenMetadata(tokenAddress, pools) {
   // Try XDEX pools for price calculation
   if (pools && pools.length > 0) {
-    // Calculate total liquidity and find best price
+    // Find a pool with valid price data
     for (const pool of pools) {
       try {
-        // Determine which token is the one we're checking and get its price
+        // Determine which token is AGI and get its price
         let tokenPrice = null;
-        let poolLiquidity = 0;
-        let poolVolume = 0;
+        let tokenSymbol = "";
         
         if (pool.token1_address === tokenAddress && pool.token1_price) {
           tokenPrice = pool.token1_price;
-          poolLiquidity = parseFloat(pool.tvl || 0);
-          poolVolume = pool.token1_volume_usd_24h || 0;
-          tokenDecimals = pool.token1_decimals || 9;
+          tokenSymbol = pool.token1_symbol;
         } else if (pool.token2_address === tokenAddress && pool.token2_price) {
           tokenPrice = pool.token2_price;
-          poolLiquidity = parseFloat(pool.tvl || 0);
-          poolVolume = pool.token2_volume_usd_24h || 0;
-          tokenDecimals = pool.token2_decimals || 9;
+          tokenSymbol = pool.token2_symbol;
         }
         
         if (tokenPrice && tokenPrice > 0) {
-          // XDEX API token_price is in terms of the paired token
-          // We use the raw price directly (already account for decimals in API)
-          const finalPrice = tokenPrice;
+          // Get base token price (WXNT = XNT on X1)
+          const baseTokenPrice = pool.token1_symbol === "WXNT" ? pool.token1_price : 1;
+          const finalPrice = tokenPrice * baseTokenPrice;
           
-          // Use the first valid price we find
-          if (!pricePerToken && finalPrice > 0) {
-            pricePerToken = finalPrice;
-          }
+          // Calculate market cap (use supply from mint data)
+          const supply = (pool.total_supply || 500000000);
+          const marketCap = supply * finalPrice;
           
-          liquidity += poolLiquidity;
-          volume24h += poolVolume;
+          return {
+            price: `$${finalPrice.toFixed(8)}`,
+            marketCap: `$${marketCap >= 1e6 ? (marketCap/1e6).toFixed(2) + 'M' : marketCap >= 1e3 ? (marketCap/1e3).toFixed(2) + 'K' : marketCap.toFixed(2)}`,
+            liquidity: `$${formatNumber(pool.tvl * baseTokenPrice)}`,
+            volume24h: `$${formatNumber(pool.token2_volume_usd_24h || pool.token1_volume_usd_24h || 0)}`,
+          };
         }
       } catch {
         // Try next pool
@@ -133,60 +126,12 @@ async function getTokenMetadata(tokenAddress, pools, connection) {
     }
   }
   
-  // Get actual supply from chain
-  let totalSupply = 0;
-  try {
-    if (connection) {
-      const mintPubkey = new PublicKey(tokenAddress);
-      const supply = await connection.getTokenSupply(mintPubkey);
-      totalSupply = supply.value.uiAmount || 0;
-      tokenDecimals = supply.value.decimals || tokenDecimals;
-    }
-  } catch (err) {
-    console.error(`  ⚠️  Could not fetch supply: ${err.message}`);
-  }
-  
-  // Calculate market cap with actual supply
-  const marketCap = pricePerToken * totalSupply;
-  
   return {
-    price: pricePerToken > 0 ? formatPrice(pricePerToken) : "$N/A",
-    marketCap: marketCap > 0 ? formatDollarValue(marketCap) : "$N/A",
-    liquidity: liquidity > 0 ? formatDollarValue(liquidity) : "$0.00",
-    volume24h: volume24h > 0 ? formatDollarValue(volume24h) : "$0.00",
-    supply: totalSupply,
-    decimals: tokenDecimals,
+    price: "$N/A",
+    marketCap: "$N/A",
+    liquidity: "$N/A",
+    volume24h: "$N/A",
   };
-}
-
-function formatDollarValue(n) {
-  if (!n || n <= 0) return "$0.00";
-  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
-  if (n >= 1e3) return `$${(n / 1e3).toFixed(2)}K`;
-  return `$${n.toFixed(2)}`;
-}
-
-function formatPrice(n) {
-  if (!n || n <= 0) return "$0.00";
-  // For very small prices, show as $0.0{10}716 style
-  if (n < 0.000001) {
-    const str = n.toFixed(15).replace(/0+$/, ''); // Remove trailing zeros
-    const match = str.match(/0\.0+/);
-    if (match) {
-      const zeroCount = match[0].length - 2; // -2 for "0."
-      const significant = str.slice(match[0].length);
-      return `$0.0{${zeroCount}}${significant}`;
-    }
-    return `$${n.toExponential(2)}`;
-  }
-  if (n < 0.01) {
-    return `$${n.toFixed(9)}`;
-  }
-  if (n < 1) {
-    return `$${n.toFixed(5)}`;
-  }
-  return `$${n.toFixed(4)}`;
 }
 
 async function checkTokenAuthorities(connection, mintPubkey) {
@@ -402,35 +347,22 @@ async function checkBurnCheckedTxs(connection, lpMintAddress, limit = 100) {
 function calculateRiskScore(tokenInfo, burnStatus, holderData, poolsCount) {
   let score = 0;
   
-  // Mint authority (30 points if active) - CRITICAL
+  // Mint authority (30 points if active)
   if (!tokenInfo.mintAuthorityRevoked) {
     score += 30;
   }
   
-  // Freeze authority (20 points if active) - HIGH
+  // Freeze authority (20 points if active)
   if (!tokenInfo.freezeAuthorityRevoked) {
     score += 20;
   }
   
-  // LP Burn status (0-25 points based on burn %)
-  // HIGH burn % = GOOD (low risk) - rug proof
-  // LOW burn % = BAD (high risk) - can remove liquidity
-  const lpBurnedPct = burnStatus.burnPercentage || 0;
-  if (lpBurnedPct >= 90) {
-    // LP permanently locked - excellent (0 risk points)
-    score += 0;
-  } else if (lpBurnedPct >= 50) {
-    // Most LP burned - good (5 risk points)
-    score += 5;
-  } else if (lpBurnedPct >= 25) {
-    // Some LP burned - medium (10 risk points)
-    score += 10;
-  } else if (lpBurnedPct >= 10) {
-    // Little burned - concerning (15 risk points)
-    score += 15;
-  } else {
-    // Not burned - high risk (25 risk points)
-    score += 25;
+  // LP not burned (25 points max)
+  if (burnStatus.totalSupply > 0) {
+    const lpBurnedPct = burnStatus.burnPercentage;
+    if (lpBurnedPct < 10) score += 25;
+    else if (lpBurnedPct < 25) score += 15;
+    else if (lpBurnedPct < 50) score += 5;
   }
   
   // Holder concentration (10-20 points)
@@ -473,7 +405,7 @@ async function main() {
   console.log("  ╚════════════════════════════════════════════════════════╝");
   console.log();
   console.log(`  🕐 ${timestamp()}`);
-  console.log(`  📋 Contract: \`${tokenAddress}\``);
+  console.log(`  🔗 ${shortAddr(tokenAddress, 10)}`);
   console.log(`  🌐 ${DEFAULT_RPC}`);
 
   // Fetch pools first for price calculation
@@ -495,15 +427,9 @@ async function main() {
   // ─── TOKEN METADATA ────────────────────────────────────────
   console.log();
   console.log("  ──────────────────────────────────────────────────────");
-  // Get token symbol from pools
-  let tokenName = "Unknown";
-  for (const p of pools) {
-    if (p.token1_address === tokenAddress && p.token1_symbol) { tokenName = p.token1_symbol; break; }
-    if (p.token2_address === tokenAddress && p.token2_symbol) { tokenName = p.token2_symbol; break; }
-  }
-  console.log(`  💰 TOKEN: ${tokenName}`);
+  console.log("  💰 TOKEN METADATA");
   console.log("  ──────────────────────────────────────────────────────");
-  const tokenData = await getTokenMetadata(tokenAddress, pools, connection);
+  const tokenData = await getTokenMetadata(tokenAddress, pools);
   console.log(`  Price:        ${tokenData.price}`);
   console.log(`  Market Cap:   ${tokenData.marketCap}`);
   console.log(`  Liquidity:    ${tokenData.liquidity}`);
@@ -539,164 +465,61 @@ async function main() {
 
   // Get burn status
   const lpBurnStatus = await checkLPBurnStatus(connection, tokenAddress);
-  // Risk score calculated after LP safety below
+  const riskScore = calculateRiskScore(tokenInfo, lpBurnStatus, holdersData, pools.length);
+  const riskRating = getRiskRating(riskScore);
 
-  // Count burn transactions - search each LP mint directly
+  // Count BurnChecked transactions - search by token mint, then filter by LP mints
   const burnCheckedTxs = [];
   const lpMints = pools.map(p => p.pool_info?.lpMint).filter(Boolean);
-  const uniqueLpMints = [...new Set(lpMints)];
-
-  for (const lpMint of uniqueLpMints) {
+  const allSignatures = await connection.getSignaturesForAddress(mintPubkey, { limit: 100 });
+  
+  for (const sigInfo of allSignatures) {
     try {
-      const lpMintPubkey = new PublicKey(lpMint);
-      const lpSignatures = await connection.getSignaturesForAddress(lpMintPubkey, { limit: 100 });
+      const tx = await connection.getParsedTransaction(sigInfo.signature, {
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0,
+      });
+      if (!tx || !tx.transaction?.message?.instructions) continue;
 
-      for (const sigInfo of lpSignatures) {
-        try {
-          const tx = await connection.getParsedTransaction(sigInfo.signature, {
-            commitment: "confirmed",
-            maxSupportedTransactionVersion: 0,
-          });
-          if (!tx || !tx.transaction?.message?.instructions) continue;
+      for (const ix of tx.transaction.message.instructions) {
+        if (!ix.parsed) continue;
 
-          // Method 1: burnChecked / burn instructions
-          for (const ix of tx.transaction.message.instructions) {
-            if (!ix.parsed) continue;
-            if (ix.parsed.type === "burnChecked" || ix.parsed.type === "burn") {
-              const info = ix.parsed.info;
-              const decimals = info.tokenAmount?.decimals || 9;
-              const amount =
-                info.tokenAmount?.uiAmount ||
-                parseFloat(info.amount || 0) / Math.pow(10, decimals);
-              burnCheckedTxs.push({
-                signature: sigInfo.signature,
-                date: sigInfo.blockTime
-                  ? new Date(sigInfo.blockTime * 1000).toISOString()
-                  : "Unknown",
-                type: ix.parsed.type,
-                amount: amount,
-                authority: info.authority || "Unknown",
-                mint: info.mint || lpMint,
-              });
-            }
+        if (ix.parsed.type === "burnChecked" || ix.parsed.type === "burn") {
+          const info = ix.parsed.info;
+          const decimals = info.tokenAmount?.decimals || 9;
+          const amount =
+            info.tokenAmount?.uiAmount ||
+            parseFloat(info.amount || 0) / Math.pow(10, decimals);
+
+          // Only count if LP mint matches our pools
+          if (lpMints.includes(info.mint)) {
+            burnCheckedTxs.push({
+              signature: sigInfo.signature,
+              date: sigInfo.blockTime
+                ? new Date(sigInfo.blockTime * 1000).toISOString()
+                : "Unknown",
+              type: ix.parsed.type,
+              amount: amount,
+              authority: info.authority || "Unknown",
+              mint: info.mint,
+            });
           }
-
-          // Method 2: closeAccount burn (balance zeroed + account closed)
-          if (tx.meta?.preTokenBalances && tx.meta?.postTokenBalances) {
-            for (const pre of tx.meta.preTokenBalances) {
-              if (pre.mint !== lpMint) continue;
-              const preAmount = parseFloat(pre.uiTokenAmount?.uiAmountString || "0");
-              if (preAmount <= 0) continue;
-              const post = tx.meta.postTokenBalances.find(
-                p => p.accountIndex === pre.accountIndex && p.mint === lpMint
-              );
-              const postAmount = post ? parseFloat(post.uiTokenAmount?.uiAmountString || "0") : 0;
-              if (postAmount === 0 && preAmount > 0) {
-                const hasClose = tx.transaction.message.instructions.some(
-                  ix => ix.parsed && (ix.parsed.type === "closeAccount" || ix.parsed.type === "closeChecked")
-                );
-                if (hasClose && !burnCheckedTxs.find(b => b.signature === sigInfo.signature)) {
-                  burnCheckedTxs.push({
-                    signature: sigInfo.signature,
-                    date: sigInfo.blockTime
-                      ? new Date(sigInfo.blockTime * 1000).toISOString()
-                      : "Unknown",
-                    type: "closeAccount (burn)",
-                    amount: preAmount,
-                    authority: "closeAccount",
-                    mint: lpMint,
-                  });
-                }
-              }
-            }
-          }
-        } catch {
-          // Skip
         }
       }
-    } catch (err) {
-      console.error("  ⚠️ Error scanning LP mint " + lpMint.slice(0,8) + "...: " + err.message);
+    } catch {
+      // Skip
     }
   }
-// Calculate total burn from BurnChecked
+
+  // Calculate total burn from BurnChecked
   const totalBurnChecked = burnCheckedTxs.reduce((sum, tx) => sum + tx.amount, 0);
   const burnCheckedDate = burnCheckedTxs.length > 0 ? burnCheckedTxs[0].date.split('T')[0] : "N/A";
 
   // Burned via burn addresses
   const burnedBurnAddr = lpBurnStatus.burnedAmount;
 
-  // LP Burned percentage calculation
-  // Total burned = BurnChecked + Burn Address amounts
-  // Calculate using original supply vs current circulating supply
-  let totalOriginalLP = 0;
-  let totalCurrentLP = 0;
-  let poolsWithData = 0;
-  for (const pool of pools) {
-    try {
-      const hexSupply = pool.pool_info?.lpSupply || "0";
-      const original = parseInt(hexSupply, 16) / 1e9;
-      if (original > 0) poolsWithData++;
-      totalOriginalLP += original;
-      if (pool.pool_info?.lpMint) {
-        const lpSupply = await connection.getTokenSupply(new PublicKey(pool.pool_info.lpMint));
-        totalCurrentLP += parseFloat(lpSupply.value.uiAmountString || "0");
-      }
-    } catch { /* skip */ }
-  }
-  
-  // Fallback: For tokens like PEPE where API returns bad hex data
-  // If we have BurnChecked but calculated burn % is < 1%, assume API is wrong
-  const hasBurnData = totalBurnChecked > 0 || burnedBurnAddr > 0;
-  let originalLPIsSuspicious = false;
-  
-  if (hasBurnData && totalCurrentLP > 0) {
-    const estimatedOriginal = totalCurrentLP + totalBurnChecked + burnedBurnAddr;
-    const rawBurnPct = totalOriginalLP > 0 ? ((totalBurnChecked + burnedBurnAddr) / totalOriginalLP) * 100 : 999;
-    
-    // Use estimate ONLY if API shows 0 supply (not for low burn %)
-    // Removed the (rawBurnPct < 1 && totalBurnChecked > 100000) condition
-    // This was causing false positives and incorrect 99.9% readings
-    if (totalOriginalLP === 0) {
-      originalLPIsSuspicious = true;
-      totalOriginalLP = estimatedOriginal;
-      console.log(`  ⚠️  API data incomplete, estimated total LP from ${pools.length} pools`);
-    }
-  }
-  
-  // Calculate total burned from all methods
-  // Use on-chain supply diff, but only if verified burns exist
-  const hasBurns = totalBurnChecked > 0 || burnedBurnAddr > 0;
-  
-  // Calculate percentage burned (locked) relative to original supply
-  let lpBurnedPct = 0;
-  
-  if (totalOriginalLP > 0) {
-    // Normal case: we have pool supply data
-    const onChainBurned = Math.max(0, totalOriginalLP - totalCurrentLP); if (hasBurns && onChainBurned > 0) { lpBurnedPct = (onChainBurned / totalOriginalLP) * 100; } else if (hasBurns && totalBurnChecked > 0) { const estimatedOriginal = totalCurrentLP + totalBurnChecked + burnedBurnAddr; lpBurnedPct = estimatedOriginal > 0 ? ((totalBurnChecked + burnedBurnAddr) / estimatedOriginal) * 100 : 0; }
-    // Cap at 99.9% to indicate "nearly all" without overstating
-    if (lpBurnedPct > 99.9) lpBurnedPct = 99.9;
-  } else if (burnedBurnAddr > 0 && totalCurrentLP > 0) {
-    // Fallback: estimate based on burned amount vs current supply
-    // Only use this if we have NO pool supply data at all
-    const estimatedOriginal = totalCurrentLP + burnedBurnAddr + totalBurnChecked;
-    lpBurnedPct = estimatedOriginal > 0 ? ((burnedBurnAddr + totalBurnChecked) / estimatedOriginal) * 100 : 0;
-    if (lpBurnedPct > 99.9) lpBurnedPct = 99.9;
-    console.log(`  ⚠️  Using fallback estimation: ${lpBurnedPct.toFixed(1)}% burned`);
-  } else if (burnedBurnAddr > 0) {
-    // Can't calculate % but we know significant burn happened
-    // Show as ~99% indicating "effectively burned"
-    lpBurnedPct = 99.9;
-    console.log(`  ⚠️  Using fallback estimation: ~99.9% burned`);
-  }
-  
-  // Cap at 100% for display, but retain actual for logic
-  const lpSafetyDisplay = Math.min(100, lpBurnedPct);
-  
-  // For risk calculation: high burn % = good (lowers risk)
-  const lpSafety = lpBurnedPct;
-
-  const riskScore = calculateRiskScore(tokenInfo, { ...lpBurnStatus, burnPercentage: lpSafety }, holdersData, pools.length);
-  const riskRating = getRiskRating(riskScore);
+  // LP Safety percentage
+  const lpSafety = ((totalBurnChecked + burnedBurnAddr) / (holdersData.totalSupply || 1)) * 100;
 
   console.log("  | Metric                              | Value");
   console.log("  | ----------------------------------- | ------------");
@@ -708,19 +531,7 @@ async function main() {
   console.log(`  | Pools Found                         | ${pools.length}`);
   console.log(`  | LP Burned (BurnChecked)            | ${formatNumber(totalBurnChecked)} (${burnCheckedTxs.length} txs)`);
   console.log(`  | LP Burned (Burn Addr)              | ${formatNumber(burnedBurnAddr)}`);
-  
-  // Show LP Burned % with appropriate indicator
-  const isFullyBurned = lpSafety >= 90;
-  const lpBurnEmoji = isFullyBurned ? "🔒" : lpSafety >= 50 ? "✅" : lpSafety >= 25 ? "🟡" : "⚠️";
-  const lpBurnText = "LP Safety";
-  const displayPct = lpSafetyDisplay >= 99.9 ? "99.9%+" : `${lpSafetyDisplay.toFixed(1)}%`;
-  const pctNote = originalLPIsSuspicious && hasBurnData ? " (est.)" : "";
-  console.log(`  | ${lpBurnText.padEnd(36)}| ${lpBurnEmoji} ${displayPct}${pctNote}`);
-  
-  if (isFullyBurned) {
-    console.log(`  | Status                              | ✅ LIQUIDITY PERMANENTLY LOCKED`);
-  }
-  
+  console.log(`  | LP Safety                           | ${lpSafety.toFixed(1)}%`);
   console.log(`  | Risk Score                          | ${riskScore}/100 ${riskRating.color} ${riskRating.rating}`);
 
   // ─── BURN CHECKED TRANSACTIONS ─────────────────────────────
@@ -733,7 +544,7 @@ async function main() {
     burnCheckedTxs.slice(0, 5).forEach((burn, i) => {
       const date = burn.date.split('T')[0];
       const txUrl = `https://explorer.mainnet.x1.xyz/tx/${burn.signature}`;
-      console.log(`  ${i + 1}. ${formatNumber(burn.amount)} LP on ${date} [🔗 View TX](${txUrl})`);
+      console.log(`  ${i + 1}. ${formatNumber(burn.amount)} LP on ${date} ([TX Explorer](${txUrl}))`);
     });
   }
 
@@ -760,8 +571,9 @@ async function main() {
         }
       } catch (e) { supply = 0; }
       
-      const poolLpMint = pool.pool_info?.lpMint;
-      const burnsInPool = poolLpMint ? burnCheckedTxs.filter(tx => tx.mint === poolLpMint).length : 0;
+      const burnsInPool = burnCheckedTxs.filter(tx => 
+        pools.some(p => p.lpMint === pool.lpMint)
+      ).length;
       
       if (burnsInPool > 0) {
         console.log(`  • ${name}: ${formatNumber(supply)} LP supply, ${burnsInPool} BurnChecked txs ✅`);
@@ -779,38 +591,16 @@ async function main() {
   
   if (riskScore === 0) {
     console.log("  Strong security profile - mint/freeze revoked, LP");
-    console.log(`  burn percentage: ${lpSafety >= 99.9 ? '99.9%+' : lpSafety.toFixed(1) + '%'}.`);
+    console.log(`  burn percentage: ${lpSafety.toFixed(1)}%.`);
     console.log("  🟢 LOW RISK.");
-  } else if (lpSafety >= 90) {
-    // Nearly all LP burned - excellent security
-    console.log(`  🔒 EXCELLENT: ~${lpSafety >= 99.9 ? '99.9%+' : lpSafety.toFixed(1) + '%'} of LP permanently locked via burn.`);
-    const burnCheckedTotal = formatNumber(totalBurnChecked);
-    const burnAddrTotal = formatNumber(burnedBurnAddr);
-    console.log(`  ${burnCheckedTotal} LP via BurnChecked (${burnCheckedTxs.length} txs)`);
-    if (burnedBurnAddr > 0) {
-      console.log(`  ${burnAddrTotal} LP sent to burn addresses.`);
-    }
-    console.log(`  ${riskRating.color} ${riskRating.rating}`);
-  } else if (lpSafety >= 50) {
-    // Mostly burned - good
-    console.log("  ✅ GOOD: Most LP has been burned/locked.");
-    console.log(`  LP burned: ${lpSafety.toFixed(1)}% (${formatNumber(actualBurned)} total)`);
-    console.log(`  ${riskRating.color} ${riskRating.rating}`);
   } else {
     console.log(`  Risk factors detected: ${riskRating.rating}`);
     console.log("  Review authorities and LP burn status below.");
   }
 
-  console.log();
-  console.log("  📋 Risk Levels:");
-  console.log("  🟢 0-24:  LOW — authorities revoked, LP burned, looks safe");
-  console.log("  🟡 25-49: MEDIUM — some concerns, investigate further");
-  console.log("  🟠 50-75: HIGH — significant red flags");
-  console.log("  🔴 76-100: CRITICAL — likely scam/rug");
-
   // Footer
   console.log();
-  console.log(`  [🔗 View on Explorer](https://explorer.mainnet.x1.xyz/address/${tokenAddress})`);
+  console.log(`  🔗 Explorer: https://explorer.mainnet.x1.xyz/address/${tokenAddress}`);
 
   console.log();
   console.log("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

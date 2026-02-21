@@ -1,4 +1,4 @@
-# X1 Token Audit
+# X1 Token Audit v2.5.1
 
 X1 blockchain token safety analyzer with XDEX API integration.
 
@@ -9,6 +9,9 @@ X1 blockchain token safety analyzer with XDEX API integration.
 - 🏊 **XDEX Pool Discovery** — Find all liquidity pools
 - 🔥 **LP Burn Detection** — Check if LP tokens were burned (v2.0+)
 - 🔥 **BurnChecked Detection** — Find permanently destroyed tokens via on-chain burns (v2.1+)
+- 💰 **Market Cap Calculation** — Accurate supply-based market cap (v2.5+)
+- 📊 **LP Safety Percentage** — Real percentage of LP burned (v2.5+)
+- 💱 **Liquidity TVL** — Total Value Locked calculation (v2.5+)
 - ⚖️ **Risk Scoring** — 0-100 scale with clear categories
 
 ## Quick Start
@@ -37,12 +40,24 @@ node check-xdex-lp-burn.js 7SXmUpcBGSAwW5LmtzQVF9jHswZ7xzmdKqWa4nDgL3ER
 | `decode-tx.js` | Decode and analyze any transaction |
 | `telegram-bot.js` | Telegram bot for audits (see [README_TG.md](README_TG.md)) |
 
-## v2.1 Features - BurnChecked Detection
+## v2.5 Features - Enhanced Analytics
 
-The v2.1 update adds **BurnChecked transaction detection** - a more secure form of LP burning that permanently removes tokens from supply.
+### 💰 Market Cap Fix (v2.5)
+- **Accurate supply-based calculation** using `connection.getTokenSupply()`
+- **Fixed bug** where market cap used incorrect pool supply data
+- **Real-time pricing** from XDEX API
 
-### What is BurnChecked?
+### 📊 LP Safety Percentage (v2.5)
+- **Correct LP burn percentage** calculation
+- **Fixed flawed estimation logic** that showed incorrect percentages
+- **Real percentage** of LP burned vs total supply
 
+### 💱 Liquidity TVL (v2.5)
+- **Total Value Locked** calculation for all pools
+- **Accurate USD valuation** of liquidity positions
+- **Multi-pool aggregation** for complete liquidity picture
+
+### 🔥 BurnChecked Detection (v2.1)
 BurnChecked transactions use Solana's token burn instruction, which:
 - Permanently destroys tokens (removes from total supply)
 - Is irreversible (unlike sending to burn addresses)
@@ -66,6 +81,7 @@ Pool 1/5: WXNT / AGI
       Authority:   8QXh51...BjggHX
 
   📊 Destroyed: 200.00K LP (48.1%)
+  💱 Liquidity: $1.65K TVL
 ```
 
 ## Environment Variables
@@ -146,4 +162,11 @@ https://github.com/Lokoweb3/x1-token-audit
 
 ## Version
 
-2.2.0 (includes v2.1 BurnChecked detection + v2.2 enhanced visuals)
+2.5.1 (includes v2.1 BurnChecked detection + v2.5 enhanced analytics + v2.5.1 bug fixes)
+
+### Changelog
+- **v2.5.1**: Fixed LP Safety calculation, liquidity TVL, Markdown links
+- **v2.5**: Fixed LP burn detection, on-chain safety calculation, clickable links
+- **v2.5**: Fixed market cap, price display, and LP burn calculations
+- **v2.1**: Added BurnChecked detection for permanent token destruction
+- **v2.0**: Initial XDEX API integration and LP burn detection

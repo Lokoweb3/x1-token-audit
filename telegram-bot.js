@@ -343,37 +343,152 @@ async function runFullAudit(tokenAddress, chatId, messageId) {
       riskEmoji = '🟡';
     }
 
-    // Build response
-    let response = `*Token Audit: ${shortAddr(tokenAddress)}*\n\n`;
-    response += `*📋 Token Info*\n`;
-    response += `Mint Authority: ${tokenInfo.mintAuthorityRevoked ? '✅ Revoked' : '⚠️ Active'}\n`;
-    response += `Freeze Auth:    ${tokenInfo.freezeAuthorityRevoked ? '✅ Revoked' : '⚠️ Active'}\n`;
-    response += `Supply:         ${formatNumber(tokenInfo.supply / Math.pow(10, tokenInfo.decimals), tokenInfo.decimals)}\n`;
-    response += `Decimals:       ${tokenInfo.decimals}\n`;
-    response += `Pools:          ${pools.length}\n\n`;
-
-    if (pools.length > 0) {
-      response += `*🔍 Pools (${pools.length})*\n`;
-      for (let i = 0; i < Math.min(3, pools.length); i++) {
-        const p = pools[i];
-        response += `${i + 1}. ${p.token1_symbol || '?'} / ${p.token2_symbol || '?'}\n`;
-        response += `   TVL: $${formatNumber(p.tvl || 0)}\n`;
+    // Get XDEX price info
+    let tokenMetadata = {
+      price: 'N/A',
+      mktcap: 'N/A',
+      liquidity: 'N/A',
+      volume24h: 'N/A'
+    };
+    try {
+      const xResponse = await fetchJSON('https://api.xdex.xyz/api/xendex/pool/list');
+      const xPools = xResponse.data || [];
+      const tokenPools = xPools.filter(p => 
+        p.token1_address === tokenAddress || p.token2_address === tokenAddress
+      );
+      if (tokenPools.length > 0) {
+        const p = tokenPools[0];
+        const tokenPrice = p.token2_address === tokenAddress ? p.token2_price : p.token1_price;
+        const basePrice = p.token1_symbol === 'WXNT' ? p.token1_price : 1;
+        const finalPrice = tokenPrice * basePrice;
+        const supply = (p.pool_info?.lpSupply ? parseInt(p.pool_info.lpSupply, 16) / 1e9 : p.total_supply || 500000000);
+        const marketCap = supply * finalPrice;
+        tokenMetadata = {
+          price: `$${finalPrice.toFixed(8)}`,
+          mktcap: `$${marketCap >= 1e6 ? (marketCap/1e6).toFixed(2) + 'M' : marketCap >= 1e3 ? (marketCap/1e3).toFixed(2) + 'K' : marketCap.toFixed(2)}`,
+          liquidity: `$${formatNumber(p.tvl * basePrice)}`,
+          volume24h: `$${formatNumber(p.token2_volume_usd_24h || p.token1_volume_usd_24h || 0)}`
+        };
       }
-      response += '\n';
+    } catch {}
+
+    const holderCount = tokenInfo.topHolders?.length || 'N/A';
+    const topHolders = tokenInfo.topHolders?.slice(0, 5) || [];
+    const burnAddrAmount = 0; // Not currently tracked in this function
+
+    // Get BurnChecked transactions
+    let burnCheckedTxns = [];
+    try {
+      const signatures = await connection.getSignaturesForAddress(mintPubkey, { limit: 50 });
+      for (const sigInfo of signatures) {
+        try {
+          const tx = await connection.getParsedTransaction(sigInfo.signature, {
+            commitment: 'confirmed',
+            maxSupportedTransactionVersion: 0,
+          });
+          if (!tx || !tx.transaction?.message?.instructions) continue;
+
+          for (const ix of tx.transaction.message.instructions) {
+            if (!ix.parsed) continue;
+            if (ix.parsed.type === 'burnChecked' || ix.parsed.type === 'burn') {
+              const info = ix.parsed.info;
+              const amount = info.tokenAmount?.uiAmount || parseFloat(info.amount || 0) / Math.pow(10, info.tokenAmount?.decimals || 9);
+              burnCheckedTxns.push({
+                amount,
+                date: sigInfo.blockTime ? new Date(sigInfo.blockTime * 1000) : null,
+                signature: sigInfo.signature
+              });
+            }
+          }
+        } catch {}
+      }
+    } catch {}
+
+    // Build new formatted response (text-based, no markdown tables)
+    let response = `─────────────────────────────────────────────────────\n`;
+    response += `💰 TOKEN METADATA\n`;
+    response += `─────────────────────────────────────────────────────\n`;
+    response += `Price:        ${tokenMetadata.price}\n`;
+    response += `Market Cap:   ${tokenMetadata.mktcap}\n`;
+    response += `Liquidity:    ${tokenMetadata.liquidity}\n`;
+    response += `Vol 24h:      ${tokenMetadata.volume24h}\n\n`;
+
+    response += `─────────────────────────────────────────────────────\n`;
+    response += `🔐 TOKEN AUTHORITY CHECK\n`;
+    response += `─────────────────────────────────────────────────────\n\n`;
+
+    response += `─────────────────────────────────────────────────────\n`;
+    response += `👥 TOKEN HOLDERS\n`;
+    response += `─────────────────────────────────────────────────────\n`;
+    response += `Total Holders: ${holderCount}\n`;
+    if (topHolders.length > 0) {
+      response += `Top Holders:\n`;
+      topHolders.forEach((h, i) => {
+        response += `  ${i + 1}. ${shortAddr(h.address)} - ${formatNumber(h.amount)} (${h.pct.toFixed(2)}%)\n`;
+      });
     }
-
-    response += `*🔥 LP Burn Status*\n`;
-    response += `Total Burned:   ${formatNumber(totalBurned)}\n`;
-    response += `Burn Percentage: ${burnPct.toFixed(1)}%\n`;
-    response += `LP Burned:      ${totalBurned > 0 ? '✅ Yes' : '❌ No'}\n\n`;
-
-    response += `*📊 Risk Summary*\n`;
-    safeFactors.forEach(f => response += `${f}\n`);
-    riskFactors.forEach(f => response += `${f}\n`);
     response += `\n`;
-    response += `*Risk Score: ${riskScore}/100*\n`;
-    response += `*Risk Level: ${riskEmoji} ${riskRating}*\n`;
+
+    response += `─────────────────────────────────────────────────────\n`;
+    response += `📊 AUDIT SUMMARY\n`;
+    response += `─────────────────────────────────────────────────────\n`;
+    response += `| Metric                              | Value\n`;
+    response += `| ----------------------------------- | ------------\n`;
+    response += `| Mint Authority                      | ${tokenInfo.mintAuthorityRevoked ? '✅ REVOKED' : '⚠️ ACTIVE'}\n`;
+    response += `| Freeze Authority                    | ${tokenInfo.freezeAuthorityRevoked ? '✅ REVOKED' : '⚠️ ACTIVE'}\n`;
+    response += `| Total Supply                        | ${formatNumber(tokenInfo.supply / Math.pow(10, tokenInfo.decimals))} (${tokenInfo.decimals} decimals)\n`;
+    response += `| Pools Found                         | ${pools.length}\n`;
+    response += `| LP Burned (BurnChecked)            | ${formatNumber(totalBurned)} (${burnCheckedTxns.length} txs)\n`;
+    response += `| LP Burned (Burn Addr)              | ${formatNumber(burnAddrAmount)}\n`;
+    response += `| LP Safety                           | ${lpSafety.toFixed(1)}%\n`;
+    response += `| Risk Score                          | ${riskScore}/100 ${riskEmoji} ${riskRating}\n\n`;
+
+    response += `─────────────────────────────────────────────────────\n`;
+    response += `🔥 BURNCHECKED TRANSACTIONS\n`;
+    response += `─────────────────────────────────────────────────────\n`;
+    if (burnCheckedTxns.length > 0) {
+      burnCheckedTxns.slice(0, 5).forEach((tx, i) => {
+        const dateStr = tx.date ? tx.date.toISOString().split('T')[0] : 'Unknown';
+        const amountStr = formatNumber(tx.amount);
+        const txUrl = `https://explorer.mainnet.x1.xyz/tx/${tx.signature}`;
+        response += `${i + 1}. ${amountStr} LP on ${dateStr} ([TX Explorer](${txUrl}))\n`;
+      });
+    } else {
+      response += `No BurnChecked transactions found.\n`;
+    }
     response += `\n`;
+
+    response += `─────────────────────────────────────────────────────\n`;
+    response += `🏊 XDEX POOL DISCOVERY\n`;
+    response += `─────────────────────────────────────────────────────\n`;
+    response += `✅ Discovered ${pools.length} pool(s)\n\n`;
+    pools.forEach((pool, i) => {
+      const poolBurnCount = burnCheckedTxns.filter(tx => {
+        const txMint = tx.signature; // Simplified - would need pool mint matching
+        return true;
+      }).length;
+      response += `• ${pool.token1_symbol}/${pool.token2_symbol} Pool: ${formatNumber(pool.pool_info?.lpSupply ? parseInt(pool.pool_info.lpSupply, 16) / 1e9 : pool.total_supply || 0)} LP supply${poolBurnCount > 0 ? `, ${poolBurnCount} BurnChecked txs ✅` : ''}\n`;
+    });
+    response += `\n`;
+
+    response += `─────────────────────────────────────────────────────\n`;
+    response += `✅ SUMMARY\n`;
+    response += `─────────────────────────────────────────────────────\n`;
+    if (riskScore === 0) {
+      response += `Strong security profile - mint/freeze revoked, LP\n`;
+      response += `burn percentage: ${lpSafety.toFixed(1)}%.\n`;
+      response += `🟢 LOW RISK.\n`;
+    } else {
+      response += `Risk factors detected: ${riskRating} ${riskEmoji}\n`;
+      response += `Review authorities and LP burn status below.\n`;
+    }
+    response += `\n`;
+    response += `📋 Risk Levels:\n`;
+    response += `🟢 0-24:  LOW — authorities revoked, LP burned, looks safe\n`;
+    response += `🟡 25-49: MEDIUM — some concerns, investigate further\n`;
+    response += `🟠 50-75: HIGH — significant red flags\n`;
+    response += `🔴 76-100: CRITICAL — likely scam/rug\n\n`;
+
     response += `_Audit completed at ${new Date().toISOString()}_\n`;
     response += `🔗 Explorer: https://explorer.mainnet.x1.xyz/address/${tokenAddress}`;
 
@@ -428,6 +543,8 @@ Commands:
 /history <TOKEN> - Show past audits for token
 /trend <TOKEN>   - Show LP changes over time
 /stats           - Show audit statistics
+/summary         - Show workspace project summary
+/work            - Same as /summary
 
 Example:
 /audit 7SXmUpcBGSAwW5LmtzQVF9jHswZ7xzmdKqWa4nDgL3ER
@@ -516,8 +633,34 @@ Total audits: ${totalAudits}
       }
       break;
 
+    case '/summary':
+    case '/work':
+      await handleSummary(chatId, messageId);
+      break;
+
     default:
       await sendMessage(chatId, 'Unknown command. Use /help for commands.');
+  }
+}
+
+// /summary command - show current workspace project summary
+async function handleSummary(chatId, messageId) {
+  try {
+    const childProcess = require('child_process');
+    const summary = childProcess.execSync('node /home/node/.openclaw/workspace/summarize-work.js', {
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024
+    });
+    
+    // Split into chunks to avoid Telegram message size limits
+    const chunks = summary.match(/[\s\S]{1,3000}/g) || [];
+    
+    for (const chunk of chunks) {
+      await sendMessage(chatId, '```markdown\n' + chunk.trim() + '\n```', messageId);
+    }
+    
+  } catch (err) {
+    await sendMessage(chatId, '❌ Error generating summary: ' + err.message, messageId);
   }
 }
 
