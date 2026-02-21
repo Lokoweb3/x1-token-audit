@@ -104,12 +104,12 @@ async function getTokenMetadata(tokenAddress, pools, connection) {
         
         if (pool.token1_address === tokenAddress && pool.token1_price) {
           tokenPrice = pool.token1_price;
-          poolLiquidity = parseFloat(pool.tvl || 0) * (pool.token1_price || 1);
+          poolLiquidity = parseFloat(pool.tvl || 0);
           poolVolume = pool.token1_volume_usd_24h || 0;
           tokenDecimals = pool.token1_decimals || 9;
         } else if (pool.token2_address === tokenAddress && pool.token2_price) {
           tokenPrice = pool.token2_price;
-          poolLiquidity = parseFloat(pool.tvl || 0) * (pool.token2_price || 1);
+          poolLiquidity = parseFloat(pool.tvl || 0);
           poolVolume = pool.token2_volume_usd_24h || 0;
           tokenDecimals = pool.token2_decimals || 9;
         }
@@ -653,8 +653,10 @@ async function main() {
     const estimatedOriginal = totalCurrentLP + totalBurnChecked + burnedBurnAddr;
     const rawBurnPct = totalOriginalLP > 0 ? ((totalBurnChecked + burnedBurnAddr) / totalOriginalLP) * 100 : 999;
     
-    // Use estimate if: API shows 0 supply, OR burn% is < 1% with 712K+ burns (impossible)
-    if (totalOriginalLP === 0 || (rawBurnPct < 1 && totalBurnChecked > 100000)) {
+    // Use estimate ONLY if API shows 0 supply (not for low burn %)
+    // Removed the (rawBurnPct < 1 && totalBurnChecked > 100000) condition
+    // This was causing false positives and incorrect 99.9% readings
+    if (totalOriginalLP === 0) {
       originalLPIsSuspicious = true;
       totalOriginalLP = estimatedOriginal;
       console.log(`  ⚠️  API data incomplete, estimated total LP from ${pools.length} pools`);
@@ -662,27 +664,29 @@ async function main() {
   }
   
   // Calculate total burned from all methods
-  const supplyBasedBurned = Math.max(0, totalOriginalLP - totalCurrentLP);
-  const totalBurned = totalBurnChecked + burnedBurnAddr + supplyBasedBurned;
+  const actualBurned = Math.max(0, totalOriginalLP - totalCurrentLP);
+  // no double counting - actualBurned already includes all burn methods
   
   // Calculate percentage burned (locked) relative to original supply
   let lpBurnedPct = 0;
   
   if (totalOriginalLP > 0) {
     // Normal case: we have pool supply data
-    lpBurnedPct = (totalBurned / totalOriginalLP) * 100;
+    lpBurnedPct = (actualBurned / totalOriginalLP) * 100;
     // Cap at 99.9% to indicate "nearly all" without overstating
     if (lpBurnedPct > 99.9) lpBurnedPct = 99.9;
   } else if (burnedBurnAddr > 0 && totalCurrentLP > 0) {
     // Fallback: estimate based on burned amount vs current supply
-    // If significant amount is burned relative to current, assume high % burned
+    // Only use this if we have NO pool supply data at all
     const estimatedOriginal = totalCurrentLP + burnedBurnAddr + totalBurnChecked;
     lpBurnedPct = estimatedOriginal > 0 ? ((burnedBurnAddr + totalBurnChecked) / estimatedOriginal) * 100 : 0;
     if (lpBurnedPct > 99.9) lpBurnedPct = 99.9;
+    console.log(`  ⚠️  Using fallback estimation: ${lpBurnedPct.toFixed(1)}% burned`);
   } else if (burnedBurnAddr > 0) {
     // Can't calculate % but we know significant burn happened
     // Show as ~99% indicating "effectively burned"
     lpBurnedPct = 99.9;
+    console.log(`  ⚠️  Using fallback estimation: ~99.9% burned`);
   }
   
   // Cap at 100% for display, but retain actual for logic
@@ -708,7 +712,7 @@ async function main() {
   // Show LP Burned % with appropriate indicator
   const isFullyBurned = lpSafety >= 90;
   const lpBurnEmoji = isFullyBurned ? "🔒" : lpSafety >= 50 ? "✅" : lpSafety >= 25 ? "🟡" : "⚠️";
-  const lpBurnText = isFullyBurned ? "LP BURNED (LOCKED)" : "LP Burned %";
+  const lpBurnText = "LP Safety";
   const displayPct = lpSafetyDisplay >= 99.9 ? "99.9%+" : `${lpSafetyDisplay.toFixed(1)}%`;
   const pctNote = originalLPIsSuspicious && hasBurnData ? " (est.)" : "";
   console.log(`  | ${lpBurnText.padEnd(36)}| ${lpBurnEmoji} ${displayPct}${pctNote}`);
@@ -790,7 +794,7 @@ async function main() {
   } else if (lpSafety >= 50) {
     // Mostly burned - good
     console.log("  ✅ GOOD: Most LP has been burned/locked.");
-    console.log(`  LP burned: ${lpSafety.toFixed(1)}% (${formatNumber(totalBurned)} total)`);
+    console.log(`  LP burned: ${lpSafety.toFixed(1)}% (${formatNumber(actualBurned)} total)`);
     console.log(`  ${riskRating.color} ${riskRating.rating}`);
   } else {
     console.log(`  Risk factors detected: ${riskRating.rating}`);

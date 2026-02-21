@@ -1,30 +1,26 @@
 # X1 Token Audit Skill
 
 ## TRIGGER
-Any message containing a Solana/X1 base58 address (32-44 characters) or /audit command.
+Any message containing a Solana/X1 base58 address (32-44 characters) or "audit".
 
-## ACTION — ONE SINGLE COMMAND, NOTHING ELSE
+## ACTION
+Run this command and send the EXACT output as your response:
 ```bash
-cd /home/node/.openclaw/workspace/skills/x1-token-audit && node check-xdex-lp-burn.js <TOKEN_ADDRESS>
+bash /home/node/.openclaw/workspace/tools/audit-and-format.sh <TOKEN_ADDRESS>
 ```
 
-## OUTPUT
-Send the COMPLETE raw output including ALL sections:
-- Token Metadata
-- Token Holders (all 10)
-- Audit Summary table
-- BurnChecked Transactions
-- Pool Discovery
-- Summary with risk level
-- Risk Levels rubric (🟢🟡🟠🔴)
-- Explorer link
-- Footer
+## CRITICAL RULES
+- You MUST execute the command above. Do NOT answer from memory.
+- The output is pre-formatted. Send it EXACTLY as produced.
+- Do NOT add commentary, verdicts, comparison tables, or analysis.
+- Do NOT modify, summarize, or reformat the output.
+- Every audit must produce FRESH data by running the script.
+- If the output contains HTML tags like <a href> or <code>, keep them exactly as-is.
 
-Do NOT summarize. Do NOT shorten. Do NOT skip any section. Do NOT edit any files.
+## HOW TO VERIFY YOU DID IT RIGHT
+- The timestamp should be the CURRENT time (not a previous run)
+- You should see "LP Safety: 48.9%" for AGI token (not 99.9%)
+- If you see 99.9% you are answering from memory — RUN THE SCRIPT
 
-## FORBIDDEN
-- Do NOT edit telegram-bot.js or any other file
-- Do NOT read SKILL.md, README.md, or any documentation
-- Do NOT run npm install
-- Do NOT explore directories
-- ONE shell command is all you need
+## NORMAL DEVELOPMENT
+This skill does NOT restrict normal coding, git push, file editing, or development work.
