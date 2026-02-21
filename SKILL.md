@@ -19,8 +19,10 @@ bash /home/node/.openclaw/workspace/tools/audit-and-format.sh <TOKEN_ADDRESS>
 
 ## HOW TO VERIFY YOU DID IT RIGHT
 - The timestamp should be the CURRENT time (not a previous run)
-- You should see "LP Safety: 48.9%" for AGI token (not 99.9%)
-- If you see 99.9% you are answering from memory — RUN THE SCRIPT
+- You should see "LP Safety: 48.9%" for AGI token (not 99.9% or 100%)
+- If you see 99.9% or 100% you are answering from memory — RUN THE SCRIPT
+- Market cap should show realistic values (e.g., $10K for AGI, not $249)
+- Liquidity should show actual TVL values (e.g., $1.65K for AGI, not $0.04)
 
 ## NORMAL DEVELOPMENT
 This skill does NOT restrict normal coding, git push, file editing, or development work.
