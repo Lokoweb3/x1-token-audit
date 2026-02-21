@@ -664,15 +664,15 @@ async function main() {
   }
   
   // Calculate total burned from all methods
-  const actualBurned = Math.max(0, totalOriginalLP - totalCurrentLP);
-  // no double counting - actualBurned already includes all burn methods
+  // Use on-chain supply diff, but only if verified burns exist
+  const hasBurns = totalBurnChecked > 0 || burnedBurnAddr > 0;
   
   // Calculate percentage burned (locked) relative to original supply
   let lpBurnedPct = 0;
   
   if (totalOriginalLP > 0) {
     // Normal case: we have pool supply data
-    lpBurnedPct = (actualBurned / totalOriginalLP) * 100;
+    const onChainBurned = Math.max(0, totalOriginalLP - totalCurrentLP); lpBurnedPct = hasBurns && totalOriginalLP > 0 ? (onChainBurned / totalOriginalLP) * 100 : 0;
     // Cap at 99.9% to indicate "nearly all" without overstating
     if (lpBurnedPct > 99.9) lpBurnedPct = 99.9;
   } else if (burnedBurnAddr > 0 && totalCurrentLP > 0) {

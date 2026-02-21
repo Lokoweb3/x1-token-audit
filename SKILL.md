@@ -15,14 +15,14 @@ bash /home/node/.openclaw/workspace/tools/audit-and-format.sh <TOKEN_ADDRESS>
 - Do NOT add commentary, verdicts, comparison tables, or analysis.
 - Do NOT modify, summarize, or reformat the output.
 - Every audit must produce FRESH data by running the script.
-- If the output contains HTML tags like <a href> or <code>, keep them exactly as-is.
+- Keep all Markdown links [text](url) exactly as they appear.
+- Do NOT strip https:// from URLs.
+- Do NOT shorten URLs or addresses.
 
 ## HOW TO VERIFY YOU DID IT RIGHT
 - The timestamp should be the CURRENT time (not a previous run)
-- You should see "LP Safety: 48.9%" for AGI token (not 99.9% or 100%)
-- If you see 99.9% or 100% you are answering from memory — RUN THE SCRIPT
-- Market cap should show realistic values (e.g., $10K for AGI, not $249)
-- Liquidity should show actual TVL values (e.g., $1.65K for AGI, not $0.04)
+- LP Safety should come from the script, not your memory
+- If you already know the result without running the command, you are doing it wrong — RUN THE SCRIPT
 
 ## NORMAL DEVELOPMENT
-This skill does NOT restrict normal coding, git push, file editing, or development work.
+This skill does NOT restrict normal coding, git push, file editing, or development work. These rules ONLY apply when running a token audit.
