@@ -672,7 +672,7 @@ async function main() {
   
   if (totalOriginalLP > 0) {
     // Normal case: we have pool supply data
-    const onChainBurned = Math.max(0, totalOriginalLP - totalCurrentLP); lpBurnedPct = hasBurns && totalOriginalLP > 0 ? (onChainBurned / totalOriginalLP) * 100 : 0;
+    const onChainBurned = Math.max(0, totalOriginalLP - totalCurrentLP); if (hasBurns && onChainBurned > 0) { lpBurnedPct = (onChainBurned / totalOriginalLP) * 100; } else if (hasBurns && totalBurnChecked > 0) { const estimatedOriginal = totalCurrentLP + totalBurnChecked + burnedBurnAddr; lpBurnedPct = estimatedOriginal > 0 ? ((totalBurnChecked + burnedBurnAddr) / estimatedOriginal) * 100 : 0; }
     // Cap at 99.9% to indicate "nearly all" without overstating
     if (lpBurnedPct > 99.9) lpBurnedPct = 99.9;
   } else if (burnedBurnAddr > 0 && totalCurrentLP > 0) {
